@@ -100,7 +100,11 @@ class EventHandler {
   async handleCallRequest(socket, data, callback) {
     logger.info('📞 Call request received - RAW DATA:', JSON.stringify(data, null, 2));
 
-    const { callId, userId, expertId } = data;
+    // userId may be missing from some clients; derive from registration map as a safe fallback
+    const socketUser = rooms.socketToUser.get(socket.id);
+    const derivedUserId = socketUser?.userType === 'user' ? socketUser.userId : undefined;
+    const { callId, expertId } = data;
+    const userId = data.userId || derivedUserId;
 
     logger.info('📞 Call request parsed', { callId, userId, expertId });
 
@@ -115,11 +119,13 @@ class EventHandler {
       return;
     }
 
-    // Check if expert is online in database (primary check)
+    // Check expert status in database (primary check)
     let isExpertOnline = false;
+    let isExpertBusyInDb = false;
     try {
       const response = await axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`);
       isExpertOnline = response.data?.isOnline || false;
+      isExpertBusyInDb = response.data?.isBusy || false;
       logger.info('🔍 Expert DB online check', { expertId, isOnline: isExpertOnline });
     } catch (error) {
       logger.error(`Failed to check expert DB status for ${expertId}:`, error.message);
@@ -139,6 +145,12 @@ class EventHandler {
     if (!isExpertOnline) {
       logger.warn('❌ Expert not online in database', { expertId });
       if (callback) callback({ success: false, error: 'Expert is currently offline. Please try again later.' });
+      return;
+    }
+
+    if (isExpertBusyInDb) {
+      logger.warn('❌ Expert busy in database', { expertId });
+      if (callback) callback({ success: false, error: 'Expert is currently on another call. Please try again later.' });
       return;
     }
 
@@ -587,7 +599,7 @@ class EventHandler {
 
   // Handle send message
   handleSendMessage(socket, data, callback) {
-    const { receiverId, content, type = 'text', tempId } = data;
+    const { receiverId, content, type = 'text', tempId, chatId } = data;
     const userData = rooms.socketToUser.get(socket.id);
 
     if (!userData || !receiverId || !content) {
@@ -608,7 +620,8 @@ class EventHandler {
       content,
       type,
       timestamp: new Date().toISOString(),
-      tempId // Pass back for UI optimistic update confirmation
+      tempId, // Pass back for UI optimistic update confirmation
+      ...(chatId ? { chatId } : {})
     };
 
     // Forward to receiver if online
