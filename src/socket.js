@@ -178,6 +178,19 @@ function initializeSocket(server) {
       eventHandler.handleCallEnd(socket, data, callback);
     });
 
+    // WebRTC signaling events
+    socket.on('offer', (data) => {
+      eventHandler.handleWebRTCOffer(socket, data);
+    });
+
+    socket.on('answer', (data) => {
+      eventHandler.handleWebRTCAnswer(socket, data);
+    });
+
+    socket.on('ice_candidate', (data) => {
+      eventHandler.handleWebRTCIce(socket, data);
+    });
+
     // Chat events
     socket.on('send_message', (data, callback) => {
       eventHandler.handleSendMessage(socket, data, callback);

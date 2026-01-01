@@ -801,6 +801,121 @@ class EventHandler {
         logger.error(`Failed to sync expert status for ${expertId}:`, error.message);
       });
   }
+
+  // WebRTC signaling handlers
+  handleWebRTCOffer(socket, data) {
+    const { callId, offer } = data;
+    logger.info(`📡 Received WebRTC offer for call ${callId}`);
+
+    // Find the call and relay to the other participant
+    const call = rooms.activeCalls.get(callId);
+    if (!call) {
+      logger.error(`Call not found for WebRTC offer: ${callId}`);
+      return;
+    }
+
+    // Determine who to send the offer to
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData) {
+      logger.error('Socket not registered for WebRTC offer');
+      return;
+    }
+
+    let targetSocketId;
+    if (userData.userId === call.callerId) {
+      // Offer from caller, send to expert
+      targetSocketId = rooms.expertSockets.get(call.expertId);
+    } else if (userData.userId === call.expertId) {
+      // Offer from expert, send to caller
+      targetSocketId = rooms.userSockets.get(call.callerId);
+    } else {
+      logger.error('Unauthorized WebRTC offer attempt');
+      return;
+    }
+
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('offer', { callId, offer });
+      logger.info(`📡 Relayed WebRTC offer to ${targetSocketId}`);
+    } else {
+      logger.error('Target socket not found for WebRTC offer');
+    }
+  }
+
+  handleWebRTCAnswer(socket, data) {
+    const { callId, answer } = data;
+    logger.info(`📡 Received WebRTC answer for call ${callId}`);
+
+    // Find the call and relay to the other participant
+    const call = rooms.activeCalls.get(callId);
+    if (!call) {
+      logger.error(`Call not found for WebRTC answer: ${callId}`);
+      return;
+    }
+
+    // Determine who to send the answer to
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData) {
+      logger.error('Socket not registered for WebRTC answer');
+      return;
+    }
+
+    let targetSocketId;
+    if (userData.userId === call.callerId) {
+      // Answer from caller, send to expert
+      targetSocketId = rooms.expertSockets.get(call.expertId);
+    } else if (userData.userId === call.expertId) {
+      // Answer from expert, send to caller
+      targetSocketId = rooms.userSockets.get(call.callerId);
+    } else {
+      logger.error('Unauthorized WebRTC answer attempt');
+      return;
+    }
+
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('answer', { callId, answer });
+      logger.info(`📡 Relayed WebRTC answer to ${targetSocketId}`);
+    } else {
+      logger.error('Target socket not found for WebRTC answer');
+    }
+  }
+
+  handleWebRTCIce(socket, data) {
+    const { callId, candidate } = data;
+    logger.info(`🧊 Received ICE candidate for call ${callId}`);
+
+    // Find the call and relay to the other participant
+    const call = rooms.activeCalls.get(callId);
+    if (!call) {
+      logger.error(`Call not found for ICE candidate: ${callId}`);
+      return;
+    }
+
+    // Determine who to send the candidate to
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData) {
+      logger.error('Socket not registered for ICE candidate');
+      return;
+    }
+
+    let targetSocketId;
+    if (userData.userId === call.callerId) {
+      // ICE from caller, send to expert
+      targetSocketId = rooms.expertSockets.get(call.expertId);
+    } else if (userData.userId === call.expertId) {
+      // ICE from expert, send to caller
+      targetSocketId = rooms.userSockets.get(call.callerId);
+    } else {
+      logger.error('Unauthorized ICE candidate attempt');
+      return;
+    }
+
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('ice_candidate', { callId, candidate });
+      logger.info(`🧊 Relayed ICE candidate to ${targetSocketId}`);
+    } else {
+      logger.error('Target socket not found for ICE candidate');
+    }
+  }
 }
 
 module.exports = EventHandler;
