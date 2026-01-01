@@ -7,8 +7,8 @@ const rooms = require('./rooms');
 const logger = require('./utils/logger');
 const axios = require('axios');
 
-// Call timeout duration (30 seconds)
-const CALL_TIMEOUT = 30000;
+// Call timeout duration (60 seconds)
+const CALL_TIMEOUT = 60000;
 
 // Backend API URL
 const BACKEND_URL = process.env.BACKEND_URL || 'https://api.abbaslogic.com';
