@@ -214,7 +214,7 @@ class EventHandler {
     }
 
     // Create call session in socket rooms
-    const call = rooms.createCall(callId, userId, expertId, userSocketId, expertSocketId);
+    const call = rooms.createCall(callId, userId, expertId, userSocketId, expertSocketId, callerInfo);
 
     // Update backend: set expert busy and call status to RINGING
     try {
@@ -375,7 +375,9 @@ class EventHandler {
     // Notify user that call was accepted
     this.io.to(call.userSocketId).emit('call_accepted', {
       callId,
-      expertId: call.expertId
+      userId: call.userId,
+      expertId: call.expertId,
+      callerInfo: call.callerInfo
     });
 
     callback({ success: true });

@@ -79,13 +79,14 @@ class RoomManager {
   }
 
   // Create a new call
-  createCall(callId, userId, expertId, userSocketId, expertSocketId) {
+  createCall(callId, userId, expertId, userSocketId, expertSocketId, callerInfo = null) {
     const call = {
       callId,
       userId,
       expertId,
       userSocketId,
       expertSocketId,
+      callerInfo,
       status: 'ringing',
       createdAt: Date.now(),
       startTime: null

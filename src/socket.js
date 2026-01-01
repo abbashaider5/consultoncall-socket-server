@@ -9,11 +9,24 @@ const logger = require('./utils/logger');
 function parseAllowedOrigins() {
   const raw = process.env.CLIENT_URLS || process.env.CLIENT_URL || '';
   const defaults = ['https://abbaslogic.com', 'https://www.abbaslogic.com'];
+  
+  // Add localhost for development
+  if (process.env.NODE_ENV !== 'production') {
+    defaults.push('http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000');
+  }
+  
+  // In production, if no CLIENT_URLS set, allow all origins (less secure but functional)
+  if (process.env.NODE_ENV === 'production' && !raw) {
+    console.warn('⚠️  No CLIENT_URLS set in production - allowing all origins (less secure)');
+    return false; // false means allow all origins
+  }
+  
   const list = raw
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
   const allow = [...new Set([...defaults, ...list])];
+  console.log('Allowed CORS origins:', allow);
   return allow;
 }
 
@@ -22,12 +35,15 @@ function initializeSocket(server) {
 
   const io = new Server(server, {
     cors: {
-      origin: (origin, callback) => {
+      origin: allowedOrigins === false ? true : (origin, callback) => {
         // Allow non-browser clients (no Origin header)
         if (!origin) return callback(null, true);
         if (allowedOrigins.includes(origin)) return callback(null, true);
         return callback(new Error(`CORS blocked origin: ${origin}`));
       },
+      methods: ['GET', 'POST', 'OPTIONS'],
+      credentials: true
+    },
       methods: ['GET', 'POST', 'OPTIONS'],
       credentials: true
     },
