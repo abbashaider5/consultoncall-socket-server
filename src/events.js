@@ -213,7 +213,25 @@ class EventHandler {
       }
     }
 
-    // Create call session in socket rooms
+    // Fetch caller info for immediate display BEFORE creating call
+    let callerInfo = null;
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/users/${userId}`, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      callerInfo = {
+        name: response.data.name,
+        avatar: response.data.avatar
+      };
+      logger.info('📋 Fetched caller info', { userId, name: callerInfo.name });
+    } catch (error) {
+      logger.warn('Failed to fetch caller info', { userId, error: error.message });
+      callerInfo = { name: 'Unknown Caller', avatar: null };
+    }
+
+    // Create call session in socket rooms with callerInfo
     const call = rooms.createCall(callId, userId, expertId, userSocketId, expertSocketId, callerInfo);
 
     // Update backend: set expert busy and call status to RINGING
@@ -237,24 +255,6 @@ class EventHandler {
       }
 
       return;
-    }
-
-    // Fetch caller info for immediate display
-    let callerInfo = null;
-    try {
-      const response = await axios.get(`${BACKEND_URL}/api/users/${userId}`, {
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      callerInfo = {
-        name: response.data.name,
-        avatar: response.data.avatar
-      };
-      logger.info('📋 Fetched caller info', { userId, name: callerInfo.name });
-    } catch (error) {
-      logger.warn('Failed to fetch caller info', { userId, error: error.message });
-      callerInfo = { name: 'Unknown Caller', avatar: null };
     }
 
     // Send incoming call notification to expert
@@ -506,95 +506,147 @@ class EventHandler {
   }
 
 
-  // Handle WebRTC signaling - offer
-  handleWebRTCOffer(socket, data) {
-    const { callId, offer } = data;
-
-    const call = rooms.getCall(callId);
-    if (!call) {
-      logger.error('Call not found for WebRTC offer', { callId });
-      return;
-    }
-
-    // Forward offer to expert
-    this.io.to(call.expertSocketId).emit('webrtc_offer', {
-      callId,
-      offer
-    });
-
-    logger.debug('WebRTC offer forwarded', { callId });
-  }
-
-  // Handle WebRTC signaling - answer
-  handleWebRTCAnswer(socket, data) {
-    const { callId, answer } = data;
-
-    const call = rooms.getCall(callId);
-    if (!call) {
-      logger.error('Call not found for WebRTC answer', { callId });
-      return;
-    }
-
-    // Forward answer to user
-    this.io.to(call.userSocketId).emit('webrtc_answer', {
-      callId,
-      answer
-    });
-
-    logger.debug('WebRTC answer forwarded', { callId });
-  }
-
-  // Handle WebRTC signaling - ICE candidate
-  handleWebRTCIce(socket, data) {
-    const { callId, candidate } = data;
-
-    const call = rooms.getCall(callId);
-    if (!call) {
-      logger.error('Call not found for ICE candidate', { callId });
-      return;
-    }
-
-    // Forward ICE candidate to the other party
-    const targetSocketId = socket.id === call.userSocketId ? call.expertSocketId : call.userSocketId;
-
-    this.io.to(targetSocketId).emit('webrtc_ice', {
-      callId,
-      candidate
-    });
-
-    logger.debug('ICE candidate forwarded', { callId });
-  }
-
-  // Handle expert status change
+  // Handle expert status change from frontend
   handleExpertStatusChange(socket, data) {
     const { expertId, isOnline } = data;
 
-    logger.info('🔄 Expert status change', { expertId, isOnline });
-
-    if (isOnline) {
-      // Expert coming online - mark online in socket memory and DB
-      rooms.expertSockets.set(expertId, socket.id);
-      rooms.onlineExperts.add(expertId);
-
-      axios.put(`${BACKEND_URL}/api/experts/set-online-internal/${expertId}`, { isOnline: true })
-        .catch(err => logger.error('Failed to set expert online in DB:', err.message));
-
-      logger.info(`✅ Expert set online: ${expertId}`);
-    } else {
-      // Expert explicitly going offline - mark offline in socket memory and DB
-      rooms.onlineExperts.delete(expertId);
-
-      axios.put(`${BACKEND_URL}/api/experts/set-online-internal/${expertId}`, { isOnline: false })
-        .catch(err => logger.error('Failed to set expert offline in DB:', err.message));
-
-      logger.info(`❌ Expert set offline: ${expertId}`);
+    // Verify socket belongs to this expert
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData || userData.userId !== expertId || userData.userType !== 'expert') {
+      logger.warn('Unauthorized expert status change attempt', { socketId: socket.id, expertId });
+      return;
     }
 
-    // Notify all connected clients about status change
-    this.io.emit('expert_status_changed', {
-      expertId: expertId,
-      isOnline: isOnline
-    });
+    // Fetch current status from DB and emit to all clients
+    axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`)
+      .then(response => {
+        const dbIsOnline = !!response.data?.isOnline;
+        const dbIsBusy = !!response.data?.isBusy;
+
+        // Emit status changes
+        this.io.emit('expert_status_changed', { expertId, isOnline: dbIsOnline });
+        this.io.emit('expert_busy_changed', { expertId, isBusy: dbIsBusy });
+
+        logger.info(`Expert status synced via socket: ${expertId}, online=${dbIsOnline}, busy=${dbIsBusy}`);
+      })
+      .catch(error => {
+        logger.error(`Failed to sync expert status for ${expertId}:`, error.message);
+      });
+  }
+
+  // WebRTC signaling handlers
+  handleWebRTCOffer(socket, data) {
+    const { callId, offer } = data;
+    logger.info(`📡 Received WebRTC offer for call ${callId}`);
+
+    // Find the call and relay to other participant
+    const call = rooms.activeCalls.get(callId);
+    if (!call) {
+      logger.error(`Call not found for WebRTC offer: ${callId}`);
+      return;
+    }
+
+    // Determine who to send offer to
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData) {
+      logger.error('Socket not registered for WebRTC offer');
+      return;
+    }
+
+    let targetSocketId;
+    if (userData.userId === call.callerId) {
+      // Offer from caller, send to expert
+      targetSocketId = rooms.expertSockets.get(call.expertId);
+    } else if (userData.userId === call.expertId) {
+      // Offer from expert, send to caller
+      targetSocketId = rooms.userSockets.get(call.callerId);
+    } else {
+      logger.error('Unauthorized WebRTC offer attempt');
+      return;
+    }
+
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('webrtc_offer', { callId, offer });
+      logger.info(`📡 Relayed WebRTC offer to ${targetSocketId}`);
+    } else {
+      logger.error('Target socket not found for WebRTC offer');
+    }
+  }
+
+  handleWebRTCAnswer(socket, data) {
+    const { callId, answer } = data;
+    logger.info(`📡 Received WebRTC answer for call ${callId}`);
+
+    // Find the call and relay to other participant
+    const call = rooms.activeCalls.get(callId);
+    if (!call) {
+      logger.error(`Call not found for WebRTC answer: ${callId}`);
+      return;
+    }
+
+    // Determine who to send answer to
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData) {
+      logger.error('Socket not registered for WebRTC answer');
+      return;
+    }
+
+    let targetSocketId;
+    if (userData.userId === call.callerId) {
+      // Answer from caller, send to expert
+      targetSocketId = rooms.expertSockets.get(call.expertId);
+    } else if (userData.userId === call.expertId) {
+      // Answer from expert, send to caller
+      targetSocketId = rooms.userSockets.get(call.callerId);
+    } else {
+      logger.error('Unauthorized WebRTC answer attempt');
+      return;
+    }
+
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('webrtc_answer', { callId, answer });
+      logger.info(`📡 Relayed WebRTC answer to ${targetSocketId}`);
+    } else {
+      logger.error('Target socket not found for WebRTC answer');
+    }
+  }
+
+  handleWebRTCIce(socket, data) {
+    const { callId, candidate } = data;
+    logger.info(`🧊 Received ICE candidate for call ${callId}`);
+
+    // Find the call and relay to other participant
+    const call = rooms.activeCalls.get(callId);
+    if (!call) {
+      logger.error(`Call not found for ICE candidate: ${callId}`);
+      return;
+    }
+
+    // Determine who to send candidate to
+    const userData = rooms.socketToUser.get(socket.id);
+    if (!userData) {
+      logger.error('Socket not registered for ICE candidate');
+      return;
+    }
+
+    let targetSocketId;
+    if (userData.userId === call.callerId) {
+      // ICE from caller, send to expert
+      targetSocketId = rooms.expertSockets.get(call.expertId);
+    } else if (userData.userId === call.expertId) {
+      // ICE from expert, send to caller
+      targetSocketId = rooms.userSockets.get(call.callerId);
+    } else {
+      logger.error('Unauthorized ICE candidate attempt');
+      return;
+    }
+
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('webrtc_ice', { callId, candidate });
+      logger.info(`🧊 Relayed ICE candidate to ${targetSocketId}`);
+    } else {
+      logger.error('Target socket not found for ICE candidate');
+    }
   }
 
   // --- CHAT EVENTS ---
@@ -700,7 +752,7 @@ class EventHandler {
         const isUserDisconnect = call.userSocketId === socket.id;
         const isExpertDisconnect = call.expertSocketId === socket.id;
 
-        // INSTANT NOTIFICATION: Notify the other party IMMEDIATELY (within milliseconds)
+        // INSTANT NOTIFICATION: Notify other party IMMEDIATELY (within milliseconds)
         const otherSocketId = isUserDisconnect ? call.expertSocketId : call.userSocketId;
         if (otherSocketId) {
           this.io.to(otherSocketId).emit('call_ended', {
@@ -772,149 +824,6 @@ class EventHandler {
     }
 
     logger.connection(socket.id, userData?.userId || 'unknown', 'disconnected');
-  }
-
-  // Handle expert status change from frontend
-  handleExpertStatusChange(socket, data) {
-    const { expertId, isOnline } = data;
-
-    // Verify the socket belongs to this expert
-    const userData = rooms.socketToUser.get(socket.id);
-    if (!userData || userData.userId !== expertId || userData.userType !== 'expert') {
-      logger.warn('Unauthorized expert status change attempt', { socketId: socket.id, expertId });
-      return;
-    }
-
-    // Fetch current status from DB and emit to all clients
-    axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`)
-      .then(response => {
-        const dbIsOnline = !!response.data?.isOnline;
-        const dbIsBusy = !!response.data?.isBusy;
-
-        // Emit status changes
-        this.io.emit('expert_status_changed', { expertId, isOnline: dbIsOnline });
-        this.io.emit('expert_busy_changed', { expertId, isBusy: dbIsBusy });
-
-        logger.info(`Expert status synced via socket: ${expertId}, online=${dbIsOnline}, busy=${dbIsBusy}`);
-      })
-      .catch(error => {
-        logger.error(`Failed to sync expert status for ${expertId}:`, error.message);
-      });
-  }
-
-  // WebRTC signaling handlers
-  handleWebRTCOffer(socket, data) {
-    const { callId, offer } = data;
-    logger.info(`📡 Received WebRTC offer for call ${callId}`);
-
-    // Find the call and relay to the other participant
-    const call = rooms.activeCalls.get(callId);
-    if (!call) {
-      logger.error(`Call not found for WebRTC offer: ${callId}`);
-      return;
-    }
-
-    // Determine who to send the offer to
-    const userData = rooms.socketToUser.get(socket.id);
-    if (!userData) {
-      logger.error('Socket not registered for WebRTC offer');
-      return;
-    }
-
-    let targetSocketId;
-    if (userData.userId === call.callerId) {
-      // Offer from caller, send to expert
-      targetSocketId = rooms.expertSockets.get(call.expertId);
-    } else if (userData.userId === call.expertId) {
-      // Offer from expert, send to caller
-      targetSocketId = rooms.userSockets.get(call.callerId);
-    } else {
-      logger.error('Unauthorized WebRTC offer attempt');
-      return;
-    }
-
-    if (targetSocketId) {
-      this.io.to(targetSocketId).emit('offer', { callId, offer });
-      logger.info(`📡 Relayed WebRTC offer to ${targetSocketId}`);
-    } else {
-      logger.error('Target socket not found for WebRTC offer');
-    }
-  }
-
-  handleWebRTCAnswer(socket, data) {
-    const { callId, answer } = data;
-    logger.info(`📡 Received WebRTC answer for call ${callId}`);
-
-    // Find the call and relay to the other participant
-    const call = rooms.activeCalls.get(callId);
-    if (!call) {
-      logger.error(`Call not found for WebRTC answer: ${callId}`);
-      return;
-    }
-
-    // Determine who to send the answer to
-    const userData = rooms.socketToUser.get(socket.id);
-    if (!userData) {
-      logger.error('Socket not registered for WebRTC answer');
-      return;
-    }
-
-    let targetSocketId;
-    if (userData.userId === call.callerId) {
-      // Answer from caller, send to expert
-      targetSocketId = rooms.expertSockets.get(call.expertId);
-    } else if (userData.userId === call.expertId) {
-      // Answer from expert, send to caller
-      targetSocketId = rooms.userSockets.get(call.callerId);
-    } else {
-      logger.error('Unauthorized WebRTC answer attempt');
-      return;
-    }
-
-    if (targetSocketId) {
-      this.io.to(targetSocketId).emit('answer', { callId, answer });
-      logger.info(`📡 Relayed WebRTC answer to ${targetSocketId}`);
-    } else {
-      logger.error('Target socket not found for WebRTC answer');
-    }
-  }
-
-  handleWebRTCIce(socket, data) {
-    const { callId, candidate } = data;
-    logger.info(`🧊 Received ICE candidate for call ${callId}`);
-
-    // Find the call and relay to the other participant
-    const call = rooms.activeCalls.get(callId);
-    if (!call) {
-      logger.error(`Call not found for ICE candidate: ${callId}`);
-      return;
-    }
-
-    // Determine who to send the candidate to
-    const userData = rooms.socketToUser.get(socket.id);
-    if (!userData) {
-      logger.error('Socket not registered for ICE candidate');
-      return;
-    }
-
-    let targetSocketId;
-    if (userData.userId === call.callerId) {
-      // ICE from caller, send to expert
-      targetSocketId = rooms.expertSockets.get(call.expertId);
-    } else if (userData.userId === call.expertId) {
-      // ICE from expert, send to caller
-      targetSocketId = rooms.userSockets.get(call.callerId);
-    } else {
-      logger.error('Unauthorized ICE candidate attempt');
-      return;
-    }
-
-    if (targetSocketId) {
-      this.io.to(targetSocketId).emit('ice_candidate', { callId, candidate });
-      logger.info(`🧊 Relayed ICE candidate to ${targetSocketId}`);
-    } else {
-      logger.error('Target socket not found for ICE candidate');
-    }
   }
 }
 
