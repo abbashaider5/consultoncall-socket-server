@@ -14,8 +14,14 @@ const logger = require('./utils/logger');
 const app = express();
 const server = http.createServer(app);
 
-// Middleware
-app.use(cors());
+// CORS Middleware - Allow all origins for socket server
+app.use(cors({
+  origin: '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 // Health check endpoint

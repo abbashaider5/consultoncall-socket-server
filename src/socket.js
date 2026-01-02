@@ -35,23 +35,24 @@ function initializeSocket(server) {
 
   const io = new Server(server, {
     cors: {
-      origin: allowedOrigins === false ? true : (origin, callback) => {
-        // Allow non-browser clients (no Origin header)
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.includes(origin)) return callback(null, true);
-        return callback(new Error(`CORS blocked origin: ${origin}`));
-      },
-      methods: ['GET', 'POST', 'OPTIONS'],
-      credentials: true
+      origin: allowedOrigins === false ? '*' : allowedOrigins,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      credentials: true,
+      allowedHeaders: ['Content-Type', 'Authorization']
     },
-      methods: ['GET', 'POST', 'OPTIONS'],
-      credentials: true
-    },
-    transports: ['websocket', 'polling'],
+    transports: ['polling', 'websocket'], // Try polling first for better compatibility
+    allowEIO3: true,
     pingTimeout: 60000,
     pingInterval: 25000,
+    upgradeTimeout: 30000,
+    maxHttpBufferSize: 1e8,
+    allowUpgrades: true,
+    perMessageDeflate: false,
+    httpCompression: false,
     connectTimeout: 45000
   });
+
+  logger.info('✅ Socket.IO server initialized with CORS:', allowedOrigins === false ? 'ALL ORIGINS' : allowedOrigins);
 
   const eventHandler = new EventHandler(io);
 
