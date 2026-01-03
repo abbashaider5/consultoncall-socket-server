@@ -122,28 +122,36 @@ class EventHandler {
     // Check expert status in database (primary check)
     let isExpertOnline = false;
     let isExpertBusyInDb = false;
+    let isExpertConnected = false;
+    
     try {
       const response = await axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`);
       isExpertOnline = response.data?.isOnline || false;
       isExpertBusyInDb = response.data?.isBusy || false;
-      logger.info('🔍 Expert DB online check', { expertId, isOnline: isExpertOnline });
+      logger.info('🔍 Expert DB online check', { expertId, isOnline: isExpertOnline, isBusy: isExpertBusyInDb });
     } catch (error) {
       logger.error(`Failed to check expert DB status for ${expertId}:`, error.message);
-      // Fallback to socket check if DB check fails
-      isExpertOnline = rooms.isExpertOnline(expertId);
+      // If DB check fails, we'll rely on socket connection
+      isExpertOnline = false;
     }
 
     // Also check socket connection status
-    const isExpertConnected = rooms.isExpertOnline(expertId);
+    isExpertConnected = rooms.isExpertOnline(expertId);
     logger.info('🔍 Expert connection check', {
       expertId,
       dbOnline: isExpertOnline,
       socketConnected: isExpertConnected,
-      onlineExperts: Array.from(rooms.onlineExperts)
+      onlineExperts: Array.from(rooms.onlineExperts),
+      expertSockets: Array.from(rooms.expertSockets.keys())
     });
 
-    if (!isExpertOnline) {
-      logger.warn('❌ Expert not online in database', { expertId });
+    // Expert is considered available if:
+    // 1. They're online in DB, OR
+    // 2. They have an active socket connection
+    const isExpertAvailable = isExpertOnline || isExpertConnected;
+    
+    if (!isExpertAvailable) {
+      logger.warn('❌ Expert not available (not in DB and not connected)', { expertId, dbOnline: isExpertOnline, socketConnected: isExpertConnected });
       if (callback) callback({ success: false, error: 'Expert is currently offline. Please try again later.' });
       return;
     }
@@ -182,11 +190,19 @@ class EventHandler {
     logger.info('🔍 Socket IDs', { expertId, expertSocketId, userSocketId });
 
     if (!expertSocketId) {
-      // Expert is temporarily disconnected but online in DB
-      logger.warn('⚠️ Expert socket not found - expert may be temporarily disconnected', { expertId });
+      // Expert socket not found - they may be temporarily disconnected or refreshing
+      logger.warn('⚠️ Expert socket not found', { expertId, isOnline: isExpertOnline, isConnected: isExpertConnected });
 
-      // Still create the call in backend and set to ringing
-      // The expert will be notified when they reconnect
+      // If expert is online in DB but not connected, wait a moment for them to reconnect
+      // Otherwise, fail the call
+      if (!isExpertOnline) {
+        logger.error('❌ Expert socket not found and not online in DB', { expertId });
+        if (callback) callback({ success: false, error: 'Expert is currently unavailable. Please try again later.' });
+        return;
+      }
+
+      // Expert is online in DB but temporarily disconnected - create call and wait for reconnection
+      logger.info('⏳ Expert online in DB but socket disconnected - creating call anyway', { expertId });
       try {
         await axios.put(`${BACKEND_URL}/api/calls/ringing/${callId}`, {}, {
           headers: {
@@ -195,7 +211,7 @@ class EventHandler {
         });
         logger.callEvent('call_set_ringing_disconnected_expert', { callId, expertId });
 
-        // Set a timeout for the call (shorter since expert is disconnected)
+        // Set a timeout for the call (30 seconds for disconnected expert)
         const timeout = setTimeout(() => {
           this.handleCallTimeout(callId);
         }, 15000); // 15 seconds instead of 30
