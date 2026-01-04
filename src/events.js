@@ -196,7 +196,7 @@ class EventHandler {
 
       // If expert is online in DB but not connected, wait a moment for them to reconnect
       // Otherwise, fail the call
-      if (!isExpertOnline) {
+      if (!isExpertOnlineInDb) {
         logger.error('❌ Expert socket not found and not online in DB', { expertId });
         if (callback) callback({ success: false, error: 'Expert is currently unavailable. Please try again later.' });
         return;
