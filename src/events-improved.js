@@ -12,7 +12,7 @@ const axios = require('axios');
 const CALL_TIMEOUT = 60000;
 
 // Backend API URL
-const BACKEND_URL = process.env.BACKEND_URL || 'https://api.abbaslogic.com';
+const API_BASE_URL = process.env.API_BASE_URL || 'https://api.abbaslogic.com';
 
 // Track expert active calls for disconnect handling
 const expertActiveCalls = new Map();
@@ -55,7 +55,7 @@ class EventHandler {
 
       // Inform clients of current DB status so UI doesn't drift
       try {
-        const statusRes = await axios.get(`${BACKEND_URL}/api/experts/status/${userId}`);
+        const statusRes = await axios.get(`${API_BASE_URL}/api/experts/status/${userId}`);
         const isOnline = !!statusRes.data?.isOnline;
         let isBusy = !!statusRes.data?.isBusy;
 
@@ -65,7 +65,7 @@ class EventHandler {
           if (activeCalls.length === 0) {
             // No active calls, clear busy status in DB
             try {
-              await axios.put(`${BACKEND_URL}/api/experts/set-online-internal/${userId}`, { isOnline, isBusy: false });
+              await axios.put(`${API_BASE_URL}/api/experts/set-online-internal/${userId}`, { isOnline, isBusy: false });
               isBusy = false;
               logger.info(`Cleared stale busy status for expert ${userId}`);
             } catch (updateError) {
@@ -129,7 +129,7 @@ class EventHandler {
     let isExpertConnected = false;
     
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`);
+      const response = await axios.get(`${API_BASE_URL}/api/experts/status/${expertId}`);
       isExpertOnline = response.data?.isOnline || false;
       isExpertBusyInDb = response.data?.isBusy || false;
       logger.info('🔍 Expert DB online check', { expertId, isOnline: isExpertOnline, isBusy: isExpertBusyInDb });
@@ -208,7 +208,7 @@ class EventHandler {
       // Expert is online in DB but temporarily disconnected - create call and wait for reconnection
       logger.info('⏳ Expert online in DB but socket disconnected - creating call anyway', { expertId });
       try {
-        await axios.put(`${BACKEND_URL}/api/calls/ringing/${callId}`, {}, {
+        await axios.put(`${API_BASE_URL}/api/calls/ringing/${callId}`, {}, {
           headers: {
             'Content-Type': 'application/json'
           }
@@ -236,7 +236,7 @@ class EventHandler {
     // Fetch caller info for immediate display BEFORE creating call
     let callerInfo = null;
     try {
-      const response = await axios.get(`${BACKEND_URL}/api/users/${userId}`, {
+      const response = await axios.get(`${API_BASE_URL}/api/users/${userId}`, {
         headers: {
           'Content-Type': 'application/json'
         }
@@ -259,7 +259,7 @@ class EventHandler {
 
     // Update backend: set expert busy and call status to RINGING
     try {
-      await axios.put(`${BACKEND_URL}/api/calls/ringing/${callId}`, {}, {
+      await axios.put(`${API_BASE_URL}/api/calls/ringing/${callId}`, {}, {
         headers: {
           'Content-Type': 'application/json'
         }
@@ -347,7 +347,7 @@ class EventHandler {
 
       // Notify backend about timeout - mark call as MISSED
       try {
-        await axios.put(`${BACKEND_URL}/api/calls/status/${callId}`, {
+        await axios.put(`${API_BASE_URL}/api/calls/status/${callId}`, {
           status: 'missed'
         }, {
           headers: {
@@ -515,7 +515,7 @@ class EventHandler {
 
     // Update expert online status from DB and notify clients
     try {
-      const statusRes = await axios.get(`${BACKEND_URL}/api/experts/status/${call.expertId}`);
+      const statusRes = await axios.get(`${API_BASE_URL}/api/experts/status/${call.expertId}`);
       const isOnline = !!statusRes.data?.isOnline;
 
       if (isOnline) {
@@ -552,7 +552,7 @@ class EventHandler {
     }
 
     // Fetch current status from DB and emit to all clients
-    axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`)
+    axios.get(`${API_BASE_URL}/api/experts/status/${expertId}`)
       .then(response => {
         const dbIsOnline = !!response.data?.isOnline;
         const dbIsBusy = !!response.data?.isBusy;
@@ -825,7 +825,7 @@ class EventHandler {
           try {
             logger.info(`💰 STOPPING BILLING - Force ending call in backend: ${callId}`);
             const response = await axios.post(
-              `${BACKEND_URL}/api/calls/internal/end-call/${callId}`,
+              `${API_BASE_URL}/api/calls/internal/end-call/${callId}`,
               { reason: 'socket_disconnect' },
               { timeout: 5000 } // 5 second timeout for fail-safe
             );

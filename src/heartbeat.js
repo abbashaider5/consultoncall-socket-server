@@ -7,7 +7,7 @@ const axios = require('axios');
 const logger = require('./utils/logger');
 const rooms = require('./rooms');
 
-const BACKEND_URL = process.env.BACKEND_URL || 'https://api.abbaslogic.com';
+const API_BASE_URL = process.env.API_BASE_URL || 'https://api.abbaslogic.com';
 const HEARTBEAT_INTERVAL = 15000; // 15 seconds
 
 class HeartbeatManager {
@@ -56,7 +56,7 @@ class HeartbeatManager {
   async syncExpertStatus(onlineExperts) {
     try {
       // Send list of actually online experts to backend for monitoring
-      const response = await axios.post(`${BACKEND_URL}/api/experts/sync-online-status`, {
+      const response = await axios.post(`${API_BASE_URL}/api/experts/sync-online-status`, {
         onlineExpertIds: onlineExperts,
         timestamp: Date.now()
       }, {
@@ -85,7 +85,7 @@ class HeartbeatManager {
         return;
       }
 
-      const response = await axios.post(`${BACKEND_URL}/api/calls/sync-active-calls`, {
+      const response = await axios.post(`${API_BASE_URL}/api/calls/sync-active-calls`, {
         activeCallIds: callIds,
         timestamp: Date.now()
       }, {
