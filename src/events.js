@@ -50,13 +50,14 @@ class EventHandler {
       logger.info(`🔵 All registered experts:`, Array.from(rooms.expertSockets.keys()));
 
       // IMPORTANT: If expert is connected to socket server, they should be considered online
-      // Database status can sync in background, but actual connection determines availability
+      // Socket connection is the source of truth for availability, not database
+      // Database status is only used for UI display (expert toggle), not call routing
       rooms.onlineExperts.add(userId);
 
       // Inform clients of current DB status so UI doesn't drift
       try {
         const statusRes = await axios.get(`${BACKEND_URL}/api/experts/status/${userId}`);
-        const isOnline = !!statusRes.data?.isOnline;
+        const dbIsOnline = !!statusRes.data?.isOnline;
         let isBusy = !!statusRes.data?.isBusy;
 
         // If expert is marked busy but has no active calls, clear the busy status
@@ -65,7 +66,7 @@ class EventHandler {
           if (activeCalls.length === 0) {
             // No active calls, clear busy status in DB
             try {
-              await axios.put(`${BACKEND_URL}/api/experts/set-online-internal/${userId}`, { isOnline, isBusy: false });
+              await axios.put(`${BACKEND_URL}/api/experts/set-online-internal/${userId}`, { isOnline: dbIsOnline, isBusy: false });
               isBusy = false;
               logger.info(`Cleared stale busy status for expert ${userId}`);
             } catch (updateError) {
@@ -74,19 +75,19 @@ class EventHandler {
           }
         }
 
-        // Sync with DB status but keep socket connection as primary
-        if (!isOnline) {
-          rooms.onlineExperts.delete(userId);
-        }
+        // IMPORTANT: Do NOT remove from onlineExperts based on DB status
+        // Socket connection is the primary indicator of availability
+        // DB status is only for UI display (expert's online/offline toggle)
+        // This ensures experts can receive calls regardless of their DB toggle state
 
-        this.io.emit('expert_status_changed', { expertId: userId, isOnline });
+        this.io.emit('expert_status_changed', { expertId: userId, isOnline: dbIsOnline });
         this.io.emit('expert_busy_changed', { expertId: userId, isBusy });
 
-        logger.info(`✅ Expert registered (dbOnline=${isOnline}, dbBusy=${isBusy}): ${userId}`);
+        logger.info(`✅ Expert registered (socketConnected=true, dbOnline=${dbIsOnline}, dbBusy=${isBusy}): ${userId}`);
       } catch (error) {
         logger.error(`Failed to read expert DB status for ${userId}:`, error.message);
         // Even if DB check fails, expert is connected to socket so they're available
-        logger.info(`Expert registered (dbOnline=unknown, but connected to socket): ${userId}`);
+        logger.info(`Expert registered (socketConnected=true, dbOnline=unknown): ${userId}`);
       }
     } else {
       rooms.registerUser(userId, socket.id);
