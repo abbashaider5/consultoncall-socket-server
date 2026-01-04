@@ -49,6 +49,10 @@ class EventHandler {
       logger.info(`🔵 Expert sockets map size: ${rooms.expertSockets.size}`);
       logger.info(`🔵 All registered experts:`, Array.from(rooms.expertSockets.keys()));
 
+      // IMPORTANT: If expert is connected to socket server, they should be considered online
+      // Database status can sync in background, but actual connection determines availability
+      rooms.onlineExperts.add(userId);
+
       // Inform clients of current DB status so UI doesn't drift
       try {
         const statusRes = await axios.get(`${BACKEND_URL}/api/experts/status/${userId}`);
@@ -70,9 +74,8 @@ class EventHandler {
           }
         }
 
-        if (isOnline) {
-          rooms.onlineExperts.add(userId);
-        } else {
+        // Sync with DB status but keep socket connection as primary
+        if (!isOnline) {
           rooms.onlineExperts.delete(userId);
         }
 
@@ -82,7 +85,8 @@ class EventHandler {
         logger.info(`✅ Expert registered (dbOnline=${isOnline}, dbBusy=${isBusy}): ${userId}`);
       } catch (error) {
         logger.error(`Failed to read expert DB status for ${userId}:`, error.message);
-        logger.info(`Expert registered (dbOnline=unknown, dbBusy=unknown): ${userId}`);
+        // Even if DB check fails, expert is connected to socket so they're available
+        logger.info(`Expert registered (dbOnline=unknown, but connected to socket): ${userId}`);
       }
     } else {
       rooms.registerUser(userId, socket.id);
@@ -119,39 +123,41 @@ class EventHandler {
       return;
     }
 
-    // Check expert status in database (primary check)
-    let isExpertOnline = false;
+    // Check expert status in database (for sync purposes)
+    let isExpertOnlineInDb = false;
     let isExpertBusyInDb = false;
     let isExpertConnected = false;
     
     try {
       const response = await axios.get(`${BACKEND_URL}/api/experts/status/${expertId}`);
-      isExpertOnline = response.data?.isOnline || false;
+      isExpertOnlineInDb = response.data?.isOnline || false;
       isExpertBusyInDb = response.data?.isBusy || false;
-      logger.info('🔍 Expert DB online check', { expertId, isOnline: isExpertOnline, isBusy: isExpertBusyInDb });
+      logger.info('🔍 Expert DB online check', { expertId, isOnline: isExpertOnlineInDb, isBusy: isExpertBusyInDb });
     } catch (error) {
       logger.error(`Failed to check expert DB status for ${expertId}:`, error.message);
-      // If DB check fails, we'll rely on socket connection
-      isExpertOnline = false;
+      // If DB check fails, we'll rely on socket connection only
+      isExpertOnlineInDb = false;
     }
 
-    // Also check socket connection status
+    // Check socket connection status (PRIMARY check - actual connection matters most)
     isExpertConnected = rooms.isExpertOnline(expertId);
     logger.info('🔍 Expert connection check', {
       expertId,
-      dbOnline: isExpertOnline,
+      dbOnline: isExpertOnlineInDb,
       socketConnected: isExpertConnected,
       onlineExperts: Array.from(rooms.onlineExperts),
       expertSockets: Array.from(rooms.expertSockets.keys())
     });
 
-    // Expert is considered available if:
-    // 1. They're online in DB, OR
-    // 2. They have an active socket connection
-    const isExpertAvailable = isExpertOnline || isExpertConnected;
-    
-    if (!isExpertAvailable) {
-      logger.warn('❌ Expert not available (not in DB and not connected)', { expertId, dbOnline: isExpertOnline, socketConnected: isExpertConnected });
+    // Expert is considered available if they have an ACTIVE socket connection
+    // Database status is secondary and can sync in background
+    // This prevents calls failing due to temporary DB sync issues
+    if (!isExpertConnected) {
+      logger.warn('❌ Expert not connected to socket server', { 
+        expertId, 
+        dbOnline: isExpertOnlineInDb,
+        socketConnected: isExpertConnected 
+      });
       if (callback) callback({ success: false, error: 'Expert is currently offline. Please try again later.' });
       return;
     }
@@ -160,12 +166,6 @@ class EventHandler {
       logger.warn('❌ Expert busy in database', { expertId });
       if (callback) callback({ success: false, error: 'Expert is currently on another call. Please try again later.' });
       return;
-    }
-
-    // If expert is online in DB but not connected to socket, they might be temporarily disconnected
-    if (!isExpertConnected) {
-      logger.warn('⚠️ Expert online in DB but not connected to socket - may be temporarily disconnected', { expertId });
-      // Still allow the call since they're marked as online
     }
 
     // Check if expert is already in an active call
